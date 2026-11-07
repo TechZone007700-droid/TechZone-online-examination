@@ -4,9 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>TechZone | Online Computer Test</title>
-<script>
-window.TZ_API_BASE_URL = "https://techzone-api.zone7.workers.dev/api";
-</script>
+<script>/* Set this to your deployed Worker URL + /api. */ window.TZ_API_BASE_URL = window.TZ_API_BASE_URL || (window.location.origin + "/api");</script>
+
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 
