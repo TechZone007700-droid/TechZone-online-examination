@@ -2313,7 +2313,7 @@ async function tzSaveAdmin(){
     const newRestart=restartEl?.value.trim()||"";
     const newAdmin=adminEl?.value.trim()||"";
     const newDate=dateEl?.value||"";
-    if(newCode && newCode.length<10) throw new Error("Website unlock password must contain at least 10 characters.");
+    if(newCode && newCode.length<6) throw new Error("Website unlock password must contain at least 6 characters.");
     if(newStudentCode && newStudentCode.length<10) throw new Error("Student access code must contain at least 10 characters.");
     if(newRestart && newRestart.length<10) throw new Error("Proctoring restart password must contain at least 10 characters.");
     if(newAdmin && newAdmin.length<10) throw new Error("New Admin password must contain at least 10 characters.");
