@@ -4,9 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>TechZone | Online Computer Test</title>
-<script>
-window.TZ_API_BASE_URL = "https://techzone-api.zone7.workers.dev/api";
-</script>
+<script>/* Set this to your deployed Worker URL + /api. */ window.TZ_API_BASE_URL = window.TZ_API_BASE_URL || (window.location.origin + "/api");</script>
 
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2313,10 +2311,10 @@ async function tzSaveAdmin(){
     const newRestart=restartEl?.value.trim()||"";
     const newAdmin=adminEl?.value.trim()||"";
     const newDate=dateEl?.value||"";
-   if(studentPassword && studentPassword.length<6)
-    if(newStudentCode && newStudentCode.length<10) throw new Error("Student access code must contain at least 10 characters.");
-    if(newRestart && newRestart.length<10) throw new Error("Proctoring restart password must contain at least 10 characters.");
-    if(newAdmin && newAdmin.length<10) throw new Error("New Admin password must contain at least 10 characters.");
+    if(newCode && newCode.length<6) throw new Error("Website unlock password must contain at least 6 characters.");
+    if(newStudentCode && newStudentCode.length<6) throw new Error("Student access code must contain at least 6 characters.");
+    if(newRestart && newRestart.length<6) throw new Error("Proctoring restart password must contain at least 6 characters.");
+    if(newAdmin && newAdmin.length<6) throw new Error("New Admin password must contain at least 6 characters.");
     if(!newDate) throw new Error("Please select Certificate Date.");
     document.querySelectorAll(".questionEdit").forEach(el=>{const i=Number(el.dataset.index);if(questions[i])questions[i].q=el.value.trim();});
     document.querySelectorAll(".optionEdit").forEach(el=>{const i=Number(el.dataset.index),o=Number(el.dataset.option);if(questions[i]?.o)questions[i].o[o]=el.value.trim();});
