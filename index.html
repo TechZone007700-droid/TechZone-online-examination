@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>TechZone | Online Computer Test</title>
+<script>/* Set this to your deployed Worker URL + /api. */ window.TZ_API_BASE_URL = window.TZ_API_BASE_URL || (window.location.origin + "/api");</script>
 
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -1231,7 +1232,7 @@ Enter your examination information before starting.
 <div class="field">
 
 <label>
-Test Access Code
+Website / Examination Access Password
 </label>
 
 <input
@@ -1915,16 +1916,16 @@ Test Settings
 
 
 <label>
-Test Access Code
+Website / Examination Access Password
 </label>
 
 <input
 id="adminCode"
-placeholder="Example: TZ2026">
+placeholder="Leave blank to keep current website password">
 
 <label style="display:block;margin-top:14px">Proctoring Restart Password</label>
 <input id="adminRestartPassword" type="password"
-placeholder="Password required after TEST FAILED" autocomplete="new-password">
+placeholder="Leave blank to keep current restart password" autocomplete="new-password">
 
 <label style="display:block;margin-top:14px">New Admin Password</label>
 <input id="adminNewPassword" type="password"
@@ -1934,11 +1935,11 @@ placeholder="Leave blank to keep current admin password" autocomplete="new-passw
 class="btn gray"
 style="width:100%;margin-top:9px"
 onclick="resetAdminPassword()">
-🔄 Reset Admin Password to 1234
+🔒 Set a New Admin Password Below
 </button>
 
 <p class="small" style="margin-top:7px">
-Restart password is separate from Test Access Code. New Admin Password changes the Admin Panel login password. Password reset is available only after the Admin Panel is unlocked.
+This Website / Examination Access Password is entered by students before the test. You can change it here and press Save All Changes. The Proctoring Restart Password and Admin Panel password are separate. Admin password reset is available only after the Admin Panel is unlocked.
 </p>
 
 
@@ -1967,6 +1968,18 @@ This date will appear automatically on certificates.
  <div class="typing-admin-stat"><span class="small">Total Marks</span><b>5</b></div>
  <div class="typing-admin-stat"><span class="small">Passages</span><b>20 Random</b></div>
 </div>
+
+<hr style="margin:20px 0;border:0;border-top:1px solid var(--border)">
+<h3>Cloud Logo & Certificate Template</h3>
+<label for="tzLogoUpload">Upload Academy Logo (PNG/JPG/WebP, max 500 KB)</label>
+<input id="tzLogoUpload" type="file" accept="image/png,image/jpeg,image/webp" style="margin-top:8px;width:100%">
+<label for="tzCertificateTemplate">Certificate Template JSON</label>
+<textarea id="tzCertificateTemplate" rows="5" placeholder='{"title":"Certificate of Achievement","subtitle":"OF COMPUTER & IT PROFICIENCY"}'></textarea>
+<label for="tzSubjectsJSON">Subjects (JSON array)</label>
+<textarea id="tzSubjectsJSON" rows="4" placeholder='[{"id":"computer-basics","name":"Computer Basics"}]'></textarea>
+<label for="tzExamsJSON">Examinations (JSON array)</label>
+<textarea id="tzExamsJSON" rows="4" placeholder='[{"id":"exam-1","name":"Computer & IT Examination","active":true}]'></textarea>
+<p class="small" style="margin-top:6px">Logo and template configuration are stored in Cloudflare D1. The existing certificate layout remains unchanged unless a later frontend version uses additional template fields.</p>
 
 </div>
 
@@ -2033,17 +2046,17 @@ Total Questions:
    TECHZONE ONLINE EXAMINATION
 ===================================================== */
 
-const DEFAULT_ADMIN_PASSWORD = "1234";
-const DEFAULT_RESTART_PASSWORD = "TZFAIL2026";
+const DEFAULT_ADMIN_PASSWORD = "";
+const DEFAULT_RESTART_PASSWORD = "";
 
-const DEFAULT_ACCESS_CODE = "TZ2026";
+const DEFAULT_ACCESS_CODE = "";
 
 const TEST_TIME = 30 * 60;
 const TYPING_TIME = 5 * 60;
 const TYPING_TOTAL_MARKS = 5;
-let typingEnabled = localStorage.getItem("tz_typing_enabled") === "true";
+let typingEnabled = false;
 let examReports = [];
-try{ examReports = JSON.parse(localStorage.getItem("tz_exam_reports") || "[]") || []; }catch(e){ examReports=[]; }
+try{ examReports = []; }catch(e){ examReports=[]; }
 let typingActive = false;
 let typingInterval = null;
 let typingSecondsLeft = TYPING_TIME;
@@ -2083,271 +2096,245 @@ const TYPING_PASSAGES = [
 const TZ_EMBEDDED_DATA = null;
 const TZ_DATA_MARKER = "__TZ_EMBEDDED_DATA_MARKER__";
 
-function tzCollectStorage(){
- const out={};
- try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k && k!=="tz_final_all_data")out[k]=localStorage.getItem(k);}}catch(e){}
- return out;
+
+/* CLOUD DATA LAYER — D1 is the source of truth. Browser storage is not used
+   for application records or passwords. Session token is memory-only. */
+const TZ_API_BASE = (window.TZ_API_BASE_URL || "https://techzone-api.YOUR_SUBDOMAIN.workers.dev/api").replace(/\/+$/,"");
+let tzAdminToken = null;
+let tzWebsiteToken = null;
+let tzCloudReady = false;
+let tzSaveQueue = Promise.resolve();
+let tzLastCloudState = null;
+let tzCloudSettings = {};
+
+async function tzApi(path, options={}){
+  const headers={"Content-Type":"application/json",...(options.headers||{})};
+  if(options.admin && tzAdminToken) headers.Authorization="Bearer "+tzAdminToken;
+  const response=await fetch(TZ_API_BASE+path,{...options,headers});
+  const body=await response.json().catch(()=>({error:"Invalid server response"}));
+  if(!response.ok) throw new Error(body.error||("API request failed ("+response.status+")"));
+  return body;
 }
 function tzSnapshot(){
   return {
-    version: 11,
-    questions: JSON.parse(JSON.stringify(questions)),
-    typingEnabled: !!typingEnabled,
-    examReports: JSON.parse(JSON.stringify(examReports)),
-    accessCode: String(accessCode || ""),
-    restartPassword: String(restartPassword || ""),
-    adminPassword: String(adminPassword || ""),
-    certificateDate: String(certificateDate || ""),
-    extraStorage: tzCollectStorage()
+    version:12,
+    questions:JSON.parse(JSON.stringify(questions)),
+    typingEnabled:!!typingEnabled,
+    examReports:JSON.parse(JSON.stringify(examReports)),
+    certificateDate:String(certificateDate||""),
+    settings:{...tzCloudSettings,typingEnabled:!!typingEnabled,certificateDate:String(certificateDate||"")}
   };
 }
-
+function tzApplyCloudState(d){
+  if(!d || typeof d!=="object") return;
+  if(Array.isArray(d.questions) && d.questions.length) questions=d.questions;
+  if(typeof d.typingEnabled==="boolean") typingEnabled=d.typingEnabled;
+  if(Array.isArray(d.examReports)) examReports=d.examReports;
+  if(typeof d.certificateDate==="string" && d.certificateDate) certificateDate=d.certificateDate;
+  if(d.settings && typeof d.settings==="object"){
+    tzCloudSettings=d.settings;
+    if(typeof d.settings.typingEnabled==="boolean") typingEnabled=d.settings.typingEnabled;
+    if(typeof d.settings.certificateDate==="string" && d.settings.certificateDate) certificateDate=d.settings.certificateDate;
+  }
+  tzLastCloudState=JSON.parse(JSON.stringify(d));
+  if(typeof updateHome==="function") updateHome();
+}
 function tzPersist(){
-  try{
-    const raw = JSON.stringify(tzSnapshot());
-    localStorage.setItem("tz_final_all_data", raw);
-    /* Keep original keys compatible with the existing application. */
-    localStorage.setItem("tz_questions", JSON.stringify(questions));
-    localStorage.setItem("tz_access_code", accessCode);
-    localStorage.setItem("tz_restart_password", restartPassword);
-    localStorage.setItem("tz_admin_password", adminPassword);
-    localStorage.setItem("tz_certificate_date", certificateDate);
-    localStorage.setItem("tz_typing_enabled", String(!!typingEnabled));
-    localStorage.setItem("tz_exam_reports", JSON.stringify(examReports));
-    return true;
-  }catch(e){
-    console.error("Persistence error:", e);
-    return false;
+  if(!tzCloudReady || !tzAdminToken) return true;
+  const snapshot=tzSnapshot();
+  tzSaveQueue=tzSaveQueue.then(()=>tzApi("/admin/state",{method:"PUT",admin:true,body:JSON.stringify(snapshot)}))
+    .then(()=>{tzLastCloudState= snapshot;})
+    .catch(err=>{console.error("Cloud save failed:",err);window.dispatchEvent(new CustomEvent("tz-cloud-error",{detail:err.message}));});
+  return true;
+}
+function tzRestore(){ return false; }
+async function tzCloudBootstrap(){
+  const data=await tzApi("/bootstrap");
+  if(data.state && Array.isArray(data.state.questions) && data.state.questions.length) tzApplyCloudState(data.state);
+  if(data.logoDataUrl) tzApplyLogo(data.logoDataUrl);
+  tzCloudReady=true;
+  return data;
+}
+function tzApplyLogo(dataUrl){
+  if(!dataUrl) return;
+  document.querySelectorAll(".brand-logo-img,.home-logo-img,.loading-brand,.cert-logo").forEach(img=>{img.src=dataUrl;});
+}
+async function tzSaveStudentReport(report){
+  try{return await tzApi("/reports",{method:"POST",headers:tzWebsiteToken?{Authorization:"Bearer "+tzWebsiteToken}:{},body:JSON.stringify(report)});}
+  catch(err){console.error("Student report cloud save failed:",err);alert("Your result could not sync to the cloud. Please inform the administrator and keep a local PDF/backup.");}
+}
+async function tzSaveResourceCollection(resource,items){
+  if(!Array.isArray(items)) throw new Error(resource+" must be a JSON array.");
+  const current=await tzApi("/resources/"+resource,{admin:true});
+  const keep=new Set(items.map(x=>String(x.id||"")).filter(Boolean));
+  for(const old of (current.items||[])) if(!keep.has(String(old.id))) await tzApi("/resources/"+resource+"/"+encodeURIComponent(old.id),{method:"DELETE",admin:true});
+  for(const item of items){
+    if(!item || typeof item!=="object") throw new Error("Invalid "+resource+" entry.");
+    const id=String(item.id||crypto.randomUUID());
+    await tzApi("/resources/"+resource+"/"+encodeURIComponent(id),{method:"PUT",admin:true,body:JSON.stringify(item)});
   }
 }
-
-function tzRestore(){
+async function tzLoadCloudBranding(){
   try{
-    let d = null;
-    const raw = localStorage.getItem("tz_final_all_data");
-    if(raw) d = JSON.parse(raw);
-    if(!d) d = TZ_EMBEDDED_DATA;
-
-    if(!d){
-      const q = localStorage.getItem("tz_questions");
-      if(q){
-        d = {
-          questions: JSON.parse(q),
-          accessCode: localStorage.getItem("tz_access_code"),
-          restartPassword: localStorage.getItem("tz_restart_password"),
-          adminPassword: localStorage.getItem("tz_admin_password"),
-          certificateDate: localStorage.getItem("tz_certificate_date")
-        };
-      }
-    }
-
-    if(!d) return false;
-    if(d.extraStorage && typeof d.extraStorage==="object"){
-      Object.entries(d.extraStorage).forEach(([k,v])=>{
-        if(typeof v==="string" && k!=="tz_final_all_data"){try{localStorage.setItem(k,v);}catch(e){}}
-      });
-    }
-    if(Array.isArray(d.questions)){ questions = d.questions; }
-    if(typeof d.accessCode === "string" && d.accessCode) accessCode = d.accessCode;
-    if(typeof d.restartPassword === "string" && d.restartPassword) restartPassword = d.restartPassword;
-    if(typeof d.adminPassword === "string" && d.adminPassword) adminPassword = d.adminPassword;
-    if(typeof d.certificateDate === "string" && d.certificateDate) certificateDate = d.certificateDate;
-    if(typeof d.typingEnabled === "boolean") typingEnabled = d.typingEnabled;
-    if(Array.isArray(d.examReports)) examReports = d.examReports;
-
-    return true;
-  }catch(e){
-    console.error("Restore error:", e);
-    return false;
+    const a=await tzApi("/resources/assets/logo-main",{admin:true});
+    if(a.items?.[0]?.dataUrl) tzApplyLogo(a.items[0].dataUrl);
+  }catch(e){}
+  try{
+    const t=await tzApi("/resources/templates/certificate-default",{admin:true});
+    const item=t.items?.[0];
+    const box=document.getElementById("tzCertificateTemplate");
+    if(box && item?.template) box.value=JSON.stringify(item.template,null,2);
+  }catch(e){}
+  for(const [resource,id] of [["subjects","tzSubjectsJSON"],["examinations","tzExamsJSON"]]){
+    try{const r=await tzApi("/resources/"+resource,{admin:true});const box=document.getElementById(id);if(box)box.value=JSON.stringify(r.items||[],null,2);}catch(e){}
   }
 }
+async function tzSaveCloudBranding(){
+  const upload=document.getElementById("tzLogoUpload");
+  if(upload?.files?.[0]){
+    const file=upload.files[0];
+    if(!/^image\/(png|jpeg|webp)$/.test(file.type) || file.size>500000) throw new Error("Logo must be PNG, JPEG or WebP and no larger than 500 KB.");
+    const dataUrl=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result));r.onerror=reject;r.readAsDataURL(file);});
+    await tzApi("/resources/assets/logo-main",{method:"PUT",admin:true,body:JSON.stringify({kind:"logo",name:file.name,mimeType:file.type,dataUrl})});
+    tzApplyLogo(dataUrl);upload.value="";
+  }
+  const box=document.getElementById("tzCertificateTemplate");
+  if(box && box.value.trim()){
+    let template;try{template=JSON.parse(box.value);}catch{throw new Error("Certificate template must be valid JSON.");}
+    await tzApi("/resources/templates/certificate-default",{method:"PUT",admin:true,body:JSON.stringify({kind:"certificate",template})});
+  }
+  for(const [resource,id] of [["subjects","tzSubjectsJSON"],["examinations","tzExamsJSON"]]){
+    const field=document.getElementById(id);
+    if(field && field.value.trim()){
+      let items;try{items=JSON.parse(field.value);}catch{throw new Error(resource+" must be valid JSON.");}
+      await tzSaveResourceCollection(resource,items);
+    }
+  }
+}
+async function tzCloudAdminLoad(){
+  const data=await tzApi("/admin/state",{admin:true});
+  if(data.state) tzApplyCloudState(data.state);
+  if(!data.state || !Array.isArray(data.state.questions) || !data.state.questions.length){
+    /* First deployment: upload the built-in question bank once after admin auth. */
+    await tzApi("/admin/state",{method:"PUT",admin:true,body:JSON.stringify(tzSnapshot())});
+  }
+  tzCloudReady=true;
+  await tzLoadCloudBranding();
+  renderAdmin();
+  renderExamReports();
+}
+async function tzVerifyPassword(role,password){
+  const result=await tzApi("/auth/login",{method:"POST",body:JSON.stringify({role,password})});
+  if(role==="admin") tzAdminToken=result.token;
+  if(role==="website") tzWebsiteToken=result.token;
+  return result;
+}
+async function tzLoadPublicSettings(){
+  try{await tzCloudBootstrap();}
+  catch(err){
+    tzCloudReady=false;
+    console.error("TechZone cloud API unavailable:",err);
+    const error=document.getElementById("tzStartupError");
+    if(error) error.textContent="Cloud connection unavailable. Contact administrator.";
+  }
+}
+window.addEventListener("online",()=>{if(tzCloudReady && tzAdminToken) tzPersist();});
+window.addEventListener("tz-cloud-error",e=>console.error(e.detail));
+let tzAutoSaveTimer=null;
+function tzScheduleAutoSave(){
+  if(!tzAdminToken) return;
+  clearTimeout(tzAutoSaveTimer);
+  tzAutoSaveTimer=setTimeout(()=>tzSaveAdmin(),1200);
+}
+setInterval(()=>{
+  if(tzCloudReady && !tzAdminToken && !testActive && !typingActive && !document.hidden){
+    tzCloudBootstrap().catch(err=>console.warn("Background cloud sync:",err));
+  }
+},30000);
 
-function tzDownloadFullBackup(){
+async function tzDownloadFullBackup(){
   try{
-    /* Include any edits currently visible in the Admin panel. */
+    if(!tzAdminToken) throw new Error("Admin login required to create a full cloud backup.");
+    await tzSaveQueue;
+    const cloud=await tzApi("/admin/export",{admin:true});
+    const payload={backupType:"TECHZONE_FULL_BACKUP",version:3,createdAt:new Date().toISOString(),data:cloud};
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json;charset=utf-8"});
+    const url=URL.createObjectURL(blob),a=document.createElement("a");
+    a.href=url;a.download="TechZone_CLOUD_Backup_"+new Date().toISOString().slice(0,10)+".json";
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
+    alert("Cloud backup downloaded.");
+  }catch(err){alert("Cloud backup failed: "+(err.message||err));}
+}
+
+
+function tzRestoreFullBackup(event){
+  const file=event?.target?.files?.[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=async function(){
+    try{
+      const backup=JSON.parse(String(reader.result||""));
+      if(!backup || backup.backupType!=="TECHZONE_FULL_BACKUP" || !backup.data) throw new Error("Invalid TechZone cloud backup.");
+      if(!confirm("Restore cloud backup? This replaces current cloud data.")) return;
+      if(!tzAdminToken) throw new Error("Admin login required.");
+      await tzApi("/admin/import",{method:"POST",admin:true,body:JSON.stringify(backup.data)});
+      const fresh=await tzApi("/admin/state",{admin:true});
+      tzApplyCloudState(fresh.state||{});
+      alert("Cloud backup restored successfully.");
+      renderAdmin();renderExamReports();
+    }catch(err){alert("Restore failed: "+(err.message||err));}
+    finally{if(event.target)event.target.value="";}
+  };
+  reader.onerror=()=>{alert("Backup file could not be read.");event.target.value="";};
+  reader.readAsText(file);
+}
+
+
+async function tzSaveAdmin(){
+  try{
+    if(!tzAdminToken) throw new Error("Admin session expired. Please log in again.");
     const codeEl=document.getElementById("adminCode");
     const restartEl=document.getElementById("adminRestartPassword");
     const adminEl=document.getElementById("adminNewPassword");
     const dateEl=document.getElementById("adminDate");
     const typingEl=document.getElementById("typingEnabledSetting");
-    if(codeEl && codeEl.value.trim()) accessCode=codeEl.value.trim();
-    if(restartEl && restartEl.value.trim()) restartPassword=restartEl.value.trim();
-    if(adminEl && adminEl.value.trim().length>=4) adminPassword=adminEl.value.trim();
-    if(dateEl && dateEl.value) certificateDate=dateEl.value;
-    if(typingEl) typingEnabled=!!typingEl.checked;
-    document.querySelectorAll(".questionEdit").forEach(el=>{
-      const i=Number(el.dataset.index); if(questions[i]) questions[i].q=el.value.trim();
-    });
-    document.querySelectorAll(".optionEdit").forEach(el=>{
-      const i=Number(el.dataset.index), o=Number(el.dataset.option);
-      if(questions[i] && Array.isArray(questions[i].o)) questions[i].o[o]=el.value.trim();
-    });
-    document.querySelectorAll(".answerEdit").forEach(el=>{
-      const i=Number(el.dataset.index); if(questions[i]) questions[i].a=Number(el.value);
-    });
-    tzPersist();
-
-    /* Full snapshot: all browser localStorage entries plus app state. */
-    const localStorageData={};
-    for(let i=0;i<localStorage.length;i++){
-      const k=localStorage.key(i);
-      if(k!==null) localStorageData[k]=localStorage.getItem(k);
-    }
-    const sessionStorageData={};
-    try{
-      for(let i=0;i<sessionStorage.length;i++){
-        const k=sessionStorage.key(i);
-        if(k!==null) sessionStorageData[k]=sessionStorage.getItem(k);
-      }
-    }catch(e){ /* session storage may be blocked by browser */ }
-    const payload={
-      backupType:"TECHZONE_FULL_BACKUP",
-      version:2,
-      createdAt:new Date().toISOString(),
-      data:tzSnapshot(),
-      localStorage:localStorageData,
-      sessionStorage:sessionStorageData
-    };
-    const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json;charset=utf-8"});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement("a");
-    a.href=url;
-    a.download="TechZone_COMPLETE_Backup_"+new Date().toISOString().slice(0,10)+".json";
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),1500);
-    alert("Complete backup download ho gaya. Is JSON file mein app ke tamam saved data aur settings shamil hain.");
-  }catch(err){
-    console.error("Backup download error:",err);
-    alert("Backup download nahi ho saka: "+(err.message||err));
-  }
+    const newCode=codeEl?.value.trim()||"";
+    const newRestart=restartEl?.value.trim()||"";
+    const newAdmin=adminEl?.value.trim()||"";
+    const newDate=dateEl?.value||"";
+    if(newCode && newCode.length<10) throw new Error("Website password must contain at least 10 characters.");
+    if(newRestart && newRestart.length<10) throw new Error("Proctoring restart password must contain at least 10 characters.");
+    if(newAdmin && newAdmin.length<10) throw new Error("New Admin password must contain at least 10 characters.");
+    if(!newDate) throw new Error("Please select Certificate Date.");
+    document.querySelectorAll(".questionEdit").forEach(el=>{const i=Number(el.dataset.index);if(questions[i])questions[i].q=el.value.trim();});
+    document.querySelectorAll(".optionEdit").forEach(el=>{const i=Number(el.dataset.index),o=Number(el.dataset.option);if(questions[i]?.o)questions[i].o[o]=el.value.trim();});
+    document.querySelectorAll(".answerEdit").forEach(el=>{const i=Number(el.dataset.index);if(questions[i])questions[i].a=Number(el.value);});
+    typingEnabled=!!typingEl?.checked;certificateDate=newDate;
+    await tzApi("/admin/passwords",{method:"PUT",admin:true,body:JSON.stringify({
+      ...(newCode?{websitePassword:newCode}:{}),
+      ...(newRestart?{restartPassword:newRestart}:{}),
+      ...(newAdmin?{adminPassword:newAdmin}:{})
+    })});
+    await tzApi("/admin/state",{method:"PUT",admin:true,body:JSON.stringify(tzSnapshot())});
+    await tzSaveCloudBranding();
+    if(adminEl)adminEl.value="";
+    if(restartEl)restartEl.value="";
+    if(typeof updateHome==="function")updateHome();
+    alert("✓ Cloud changes saved. Website and Admin passwords remain independent.");
+    return true;
+  }catch(e){console.error(e);alert("Cloud save error: "+(e.message||e));return false;}
 }
 
-function tzRestoreFullBackup(event){
-  const file=event && event.target && event.target.files && event.target.files[0];
-  if(!file) return;
-  const reader=new FileReader();
-  reader.onload=function(){
-    try{
-      const backup=JSON.parse(String(reader.result||""));
-      if(!backup || backup.backupType!=="TECHZONE_FULL_BACKUP" || !backup.data || !Array.isArray(backup.data.questions))
-        throw new Error("Yeh TechZone ka valid complete backup JSON nahi hai.");
-      if(!confirm("Restore se TechZone ka current saved data backup ke data se update ho jayega. Pehle current data ka backup bana lena behtar hai. Continue?")){
-        event.target.value=""; return;
-      }
-      /* Restore all captured localStorage entries without deleting unrelated keys. */
-      const stored=backup.localStorage || backup.storage || {};
-      if(stored && typeof stored==="object"){
-        Object.entries(stored).forEach(([k,v])=>{
-          if(typeof v==="string") localStorage.setItem(k,v);
-        });
-      }
-      if(backup.sessionStorage && typeof backup.sessionStorage==="object"){
-        try{
-          Object.entries(backup.sessionStorage).forEach(([k,v])=>{
-            if(typeof v==="string") sessionStorage.setItem(k,v);
-          });
-        }catch(e){ console.warn("Session storage restore skipped:",e); }
-      }
-      questions=backup.data.questions;
-      accessCode=String(backup.data.accessCode || DEFAULT_ACCESS_CODE);
-      restartPassword=String(backup.data.restartPassword || DEFAULT_RESTART_PASSWORD);
-      adminPassword=String(backup.data.adminPassword || DEFAULT_ADMIN_PASSWORD);
-      certificateDate=String(backup.data.certificateDate || new Date().toISOString().slice(0,10));
-      typingEnabled=!!backup.data.typingEnabled;
-      examReports=Array.isArray(backup.data.examReports)?backup.data.examReports:[];
-      tzPersist();
-      if(typeof updateHome==="function") updateHome();
-      alert("Complete backup restore ho gaya. Website reload ho rahi hai taake tamam data sahi load ho.");
-      location.reload();
-    }catch(err){
-      console.error("Backup restore error:",err);
-      alert("Backup restore nahi ho saka: "+(err.message||err));
-    }finally{
-      if(event && event.target) event.target.value="";
-    }
-  };
-  reader.onerror=function(){ alert("Backup file read nahi ho saki."); if(event.target) event.target.value=""; };
-  reader.readAsText(file);
-}
-
-function tzSaveAdmin(){
+async function tzDownloadUpdatedHTML(){
   try{
-    const codeEl = document.getElementById("adminCode");
-    const restartEl = document.getElementById("adminRestartPassword");
-    const adminEl = document.getElementById("adminNewPassword");
-    const dateEl = document.getElementById("adminDate");
-    const typingEl = document.getElementById("typingEnabledSetting");
-
-    const newCode = codeEl ? codeEl.value.trim() : "";
-    const newRestart = restartEl ? restartEl.value.trim() : "";
-    const newAdmin = adminEl ? adminEl.value.trim() : "";
-    const newDate = dateEl ? dateEl.value : "";
-
-    if(!newCode){
-      alert("Test Access Code cannot be empty.");
-      return false;
-    }
-    if(!newRestart){
-      alert("Proctoring Restart Password cannot be empty.");
-      return false;
-    }
-    if(newAdmin && newAdmin.length < 4){
-      alert("New Admin Password must be at least 4 characters.");
-      return false;
-    }
-    if(!newDate){
-      alert("Please select Certificate Date.");
-      return false;
-    }
-
-    document.querySelectorAll(".questionEdit").forEach(function(el){
-      const i = Number(el.dataset.index);
-      if(questions[i]) questions[i].q = el.value.trim();
-    });
-
-    document.querySelectorAll(".optionEdit").forEach(function(el){
-      const i = Number(el.dataset.index);
-      const o = Number(el.dataset.option);
-      if(questions[i] && questions[i].o) questions[i].o[o] = el.value.trim();
-    });
-
-    document.querySelectorAll(".answerEdit").forEach(function(el){
-      const i = Number(el.dataset.index);
-      if(questions[i]) questions[i].a = Number(el.value);
-    });
-
-    accessCode = newCode;
-    restartPassword = newRestart;
-    certificateDate = newDate;
-    if(newAdmin) adminPassword = newAdmin;
-    if(typingEl) typingEnabled = !!typingEl.checked;
-
-    const ok = tzPersist();
-
-    if(typeof updateHome === "function") updateHome();
-
-    if(ok){
-      alert("✓ All changes saved. The startup password is the Admin Panel password.");
-    }else{
-      alert("⚠️ Browser storage save failed.");
-    }
-    return ok;
-  }catch(e){
-    console.error(e);
-    alert("⚠️ Save error: " + (e.message || e));
-    return false;
-  }
-}
-
-function tzDownloadUpdatedHTML(){
-  try{
-    if(!tzSaveAdmin()) return;
+    if(!await tzSaveAdmin()) return;
 
     /* Always save the downloaded copy in normal Home/Test state. */
     if(typeof goHome === "function") goHome();
 
     const data = tzSnapshot();
     let source = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
+    source = source.replace('window.TZ_API_BASE_URL = window.TZ_API_BASE_URL || (window.location.origin + "/api");',
+      'window.TZ_API_BASE_URL = '+JSON.stringify(TZ_API_BASE)+';');
     const marker = 'const TZ_EMBEDDED_DATA = null;\nconst TZ_DATA_MARKER = "__TZ_EMBEDDED_DATA_MARKER__";';
 
     if(!source.includes(marker)) throw new Error("Data marker not found.");
@@ -2401,78 +2388,40 @@ o:x[1],
 a:x[2]
 }));
 
-const TZ_SAVED_QUESTIONS = JSON.parse(
-localStorage.getItem("tz_questions")
-|| "null"
-);
-
-let questions = TZ_SAVED_QUESTIONS
-|| defaultQuestions.map(x=>({
-q:x[0],
-o:x[1],
-a:x[2]
-}));
-
-/* If an older browser save already exists, add the new 16 questions once. */
-if(TZ_SAVED_QUESTIONS && !localStorage.getItem("tz_added_16_questions_v1")){
-  const existingTexts = new Set(questions.map(x => String(x.q || "").trim()));
-  TZ_ADDED_16_QUESTIONS.forEach(q => {
-    if(!existingTexts.has(q.q.trim())){
-      questions.push(q);
-    }
-  });
-  localStorage.setItem("tz_added_16_questions_v1","1");
-}
-
-
-let accessCode =
-localStorage.getItem("tz_access_code")
-||
-DEFAULT_ACCESS_CODE;
-
-/* ================= ADMIN PASSWORDS =================
-   Admin login password is separate from the proctoring
-   restart password. Default Admin password = 1234.
-*/
-let adminPassword =
-localStorage.getItem("tz_admin_password") ||
-DEFAULT_ADMIN_PASSWORD;
-
-let restartPassword =
-localStorage.getItem("tz_restart_password") ||
-DEFAULT_RESTART_PASSWORD;
-
-
-/*
-Admin can choose the certificate date.
-Default = today's date.
-*/
-
-let certificateDate =
-localStorage.getItem("tz_certificate_date")
-||
-new Date().toISOString().split("T")[0];
-
-/* Restore ONLY after questions/password variables exist. */
+const TZ_SAVED_QUESTIONS = null;
+let questions = defaultQuestions.map(x=>({q:x[0],o:x[1],a:x[2]}));
+let accessCode = "";
+let adminPassword = "";
+let restartPassword = "";
+let certificateDate = new Date().toISOString().split("T")[0];
 tzRestore();
-tzPersist();
+
+/* STARTUP PASSWORD GATE: independently verified by the cloud API. */
 
 /* STARTUP PASSWORD GATE: same credential as Admin Panel password */
-function tzUnlockStartup(event){
+
+async function tzUnlockStartup(event){
  if(event)event.preventDefault();
- const input=document.getElementById("tzStartupPassword");
- const error=document.getElementById("tzStartupError");
- if((input?.value||"").trim()!==adminPassword){
-  if(error)error.textContent="Incorrect password. Please try again.";
+ const input=document.getElementById("tzStartupPassword"),error=document.getElementById("tzStartupError");
+ try{
+  if(!tzCloudReady) await tzCloudBootstrap();
+  await tzVerifyPassword("website",input?.value||"");
+  if(error)error.textContent="";
+  if(input)input.value="";
+  document.getElementById("tzStartupLock")?.classList.add("tz-unlocked");
+ }catch(err){
+  if(error)error.textContent=err.message||"Incorrect password.";
   if(input){input.value="";input.focus();}
-  return false;
  }
- if(error)error.textContent="";
- if(input)input.value="";
- document.getElementById("tzStartupLock")?.classList.add("tz-unlocked");
  return false;
 }
 document.addEventListener("DOMContentLoaded",()=>{
+ tzLoadPublicSettings();
+ document.getElementById("adminQuestions")?.addEventListener("change",tzScheduleAutoSave);
+ ["adminCode","adminRestartPassword","adminNewPassword","adminDate","typingEnabledSetting","tzLogoUpload","tzCertificateTemplate","tzSubjectsJSON","tzExamsJSON"].forEach(id=>{
+   const el=document.getElementById(id);
+   if(el) el.addEventListener("change",()=>{if(id==="tzLogoUpload"||id==="tzCertificateTemplate")tzScheduleAutoSave();else tzScheduleAutoSave();});
+ });
  const form=document.getElementById("tzStartupForm");
  if(form)form.addEventListener("submit",tzUnlockStartup);
  document.getElementById("tzStartupPassword")?.focus();
@@ -2636,13 +2585,7 @@ document
 .trim();
 
 
-if(code!==accessCode){
-
-alert("Incorrect Test Access Code.");
-
-return;
-
-}
+try{ await tzVerifyPassword("website",code); }catch(err){ alert(err.message||"Incorrect Test Access Code."); return; }
 
 
 if(!name){
@@ -3056,7 +2999,7 @@ if(typingInputElement){
   });
 }
 
-function completeExamination(typingResult){
+async function completeExamination(typingResult){
   const mcq=pendingMcqResult||{correct:0,wrong:0,total:0,wrongQuestions:[]};
   const typingOn=!!typingEnabled;
   const typingMarks=typingOn&&typingResult?typingResult.typingMarks:0;
@@ -3080,6 +3023,7 @@ function completeExamination(typingResult){
   };
   examReports.push(report);
   if(examReports.length>500) examReports=examReports.slice(-500);
+  await tzSaveStudentReport(report);
   tzPersist();
   pendingMcqResult=null;
   startResultLoading();
@@ -3481,46 +3425,23 @@ if(input) input.value="";
 
 
 /* Reset is intentionally available ONLY inside the unlocked Admin Panel. */
-function resetAdminPassword(){
-
-const adminPanel=document.getElementById("admin");
-if(!adminPanel || adminPanel.classList.contains("hidden")){
-  return;
-}
-
-if(!confirm("Reset Admin Panel password to 1234?")){
-  return;
-}
-
-adminPassword=DEFAULT_ADMIN_PASSWORD;
-tzPersist();
-
-const newPasswordInput=document.getElementById("adminNewPassword");
-if(newPasswordInput) newPasswordInput.value="";
-
-alert("✓ Admin password has been reset to 1234.");
+async function resetAdminPassword(){
+ alert("For security, use the New Admin Password field and Save All Changes. The server never reveals or resets a password to a hard-coded default.");
 }
 
 
-function adminLogin(){
-
-const input=document.getElementById("adminPassword");
-const password=(input?.value || "").trim();
-
-if(password!==adminPassword){
-
-alert("Incorrect Admin Password.");
-
-if(input){
-  input.value="";
-  input.focus();
-}
-
-return;
-}
-
-openAdmin();
-
+async function adminLogin(){
+ const input=document.getElementById("adminPassword");
+ const password=(input?.value||"").trim();
+ try{
+  await tzVerifyPassword("admin",password);
+  if(input)input.value="";
+  await tzCloudAdminLoad();
+  openAdmin();
+ }catch(err){
+  alert(err.message||"Incorrect Admin Password.");
+  if(input){input.value="";input.focus();}
+ }
 }
 
 
@@ -3535,11 +3456,8 @@ document
 .classList.remove("hidden");
 
 
-document
-.getElementById("adminCode")
-.value=
-accessCode;
- document.getElementById("adminRestartPassword").value=restartPassword;
+document.getElementById("adminCode").value="";
+ document.getElementById("adminRestartPassword").value="";
  document.getElementById("adminNewPassword").value="";
 
 
